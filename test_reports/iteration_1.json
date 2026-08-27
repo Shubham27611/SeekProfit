@@ -1,0 +1,27 @@
+{
+  "summary": "First-finish frontend smoke test of SeekProfit foundation shell. All 10 requested review flows verified end-to-end: unauth root redirect, protected /app/*, email+password login, demo-operator login, sidebar/header structure, Overview KPI/chart/feed, every sidebar route (Overview + 9 placeholders labeled 'Planned — Stage 2'), user menu logout + post-logout protection, mobile menu open/close on navigation, 404 for unknown routes, and zero console errors (Recharts width/height warning filtered as agreed).",
+  "tested_scope": ["frontend", "auth", "integration"],
+  "passed": [
+    "'/' redirects unauthenticated users to /login",
+    "/app/overview redirects to /login when unauthenticated (RequireAuth works)",
+    "Email+password submit signs in and lands on /app/overview",
+    "'Continue as demo operator' (auth-demo-login-button) signs in and lands on /app/overview",
+    "AppShell renders app-shell-root, app-sidebar, app-sidebar-brand, app-header",
+    "Sidebar shows all 4 sections: Workspace, Data, Insights, Settings",
+    "Header shows workspace switcher, search input, and user menu trigger (notifications present visually)",
+    "Overview page renders page-overview, overview-chart, overview-activity-feed, overview-export-button, overview-date-range-button",
+    "All 10 sidebar nav items route cleanly: overview + 9 placeholders (revenue-recovery, profit-leaks, opportunities, action-center, data-sources, imports, ai-analysis, reports, settings) render placeholder-<slug> with 'Planned — Stage 2' badge",
+    "User menu trigger opens; app-user-menu-logout signs out and redirects to /login; /app/overview then re-redirects to /login",
+    "Mobile (390x844): desktop app-sidebar hidden; app-mobile-menu-button opens app-mobile-nav; clicking a nav item inside the sheet navigates and auto-closes the sheet",
+    "Unknown routes (/random-thing, /app/does-not-exist) render page-not-found",
+    "0 console errors after filtering known Recharts width/height mount warning"
+  ],
+  "failed": [],
+  "action_items": [
+    "Optional (non-blocking): PAGE testids for placeholder pages (page-revenue-recovery, page-profit-leaks, ...) are declared in /app/frontend/src/constants/testIds.js but only 'page-overview' and 'page-not-found' are actually rendered. Placeholder pages use placeholder-<slug> instead. Consider either (a) also emitting data-testid={PAGE[slug]} on the PlaceholderPage root for canonical parity, or (b) removing unused entries from testIds.js to prevent future test drift. Not a bug — foundation shell behaves as specified."
+  ],
+  "success_rate": {"backend": "N/A (backend testing skipped per request)", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "test_credentials": "Client-only stub auth (localStorage key 'seekprofit.auth'). Any email/password accepted; demo button also works. /app/memory/test_credentials.md not present — not required for this stub."
+}

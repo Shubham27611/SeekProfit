@@ -1,0 +1,115 @@
+{
+  "theme": "Dark-first, sophisticated, minimal, high information density",
+  "archetype": "Institutional Fintech / Old Money Tech",
+  "typography": {
+    "font_families": {
+      "heading": "'Cabinet Grotesk', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "scales": {
+      "h1": "text-3xl md:text-4xl tracking-tight font-medium text-white",
+      "h2": "text-2xl md:text-3xl tracking-tight font-medium text-zinc-100",
+      "h3": "text-xl md:text-2xl tracking-tight font-medium text-zinc-100",
+      "h4": "text-lg md:text-xl font-medium text-zinc-200",
+      "body": "text-sm md:text-base leading-relaxed text-zinc-400",
+      "financial_data": "font-mono text-xl md:text-2xl tracking-tight text-zinc-100",
+      "labels": "text-xs font-semibold tracking-wider uppercase text-zinc-500"
+    },
+    "rules": [
+      "No Inter or Roboto allowed anywhere.",
+      "Use JetBrains Mono exclusively for numerical values, financial metrics, and tabular data to ensure perfect tabular alignment.",
+      "Apply tracking-tight to all headings to maintain a sophisticated, dense look."
+    ]
+  },
+  "colors": {
+    "background": {
+      "default": "#09090B",
+      "paper": "#121214",
+      "elevated": "#18181B"
+    },
+    "brand": {
+      "primary": "#059669",
+      "primary_hover": "#047857",
+      "primary_foreground": "#FFFFFF"
+    },
+    "semantic": {
+      "positive": "#10B981",
+      "warning": "#F59E0B",
+      "critical": "#EF4444",
+      "neutral": "#A1A1AA"
+    },
+    "border": "#27272A",
+    "text": {
+      "primary": "#FAFAFA",
+      "secondary": "#A1A1AA",
+      "disabled": "#52525B"
+    },
+    "rules": [
+      "No global gradients or excessive glassmorphism. Stick to flat, solid matte surfaces.",
+      "Use #10B981 purely as a functional accent for positive numbers or primary CTA. Do not flood the screen with green.",
+      "Ensure strong WCAG contrast for all text over dark backgrounds."
+    ]
+  },
+  "layout_and_spacing": {
+    "philosophy": "Institutional density meets modern elegance.",
+    "grid": {
+      "dashboard": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-4 md:gap-6"
+    },
+    "spacing": {
+      "container_padding": "p-6 md:p-8",
+      "card_padding": "p-4 md:p-5"
+    },
+    "surfaces": {
+      "radius": "rounded-md (max 8px)",
+      "borders": "border border-zinc-800",
+      "shadows": "None. Rely on 1px borders and slight background lightness shifts to distinguish elevation."
+    }
+  },
+  "components": {
+    "buttons": "Pill-shaped or sharp rounded-md. Matte finishes. Primary buttons use the brand green. Secondary buttons are transparent with 1px border-zinc-700 and hover:bg-zinc-800.",
+    "cards": "Flat, cardless feel or ultra-subtle rounded-md with border-zinc-800. No heavy dropshadows. Background #121214.",
+    "sidebar": "Darkest background (#09090B), border-r border-zinc-800, small text-sm links with hover:bg-zinc-900 transition.",
+    "tables": "Dense rows. No alternating backgrounds. Subtle bottom border on rows (border-zinc-800). Mono fonts for numerical columns. Right-align monetary values.",
+    "badges": "Subtle background tints (e.g., bg-emerald-500/10 text-emerald-400) rather than solid fills to maintain dark mode aesthetic.",
+    "charts": "Recharts. Remove default cartesian grid or set to very low opacity (#27272A). Tooltips must have solid dark backgrounds (#18181B) with 1px borders."
+  },
+  "icons": {
+    "library": "Phosphor Icons",
+    "install_command": "yarn add @phosphor-icons/react",
+    "style": "Duotone or Regular weight, strictly sized to 16px or 20px for dense UI."
+  },
+  "image_urls": {
+    "user_avatar": {
+      "url": "https://images.unsplash.com/photo-1767175620484-1ed37931a0d1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMHBvcnRyYWl0JTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzg3ODEyNjgxfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Professional man in dark suit, use for header profile dropdown."
+    },
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1687843040524-ef6dc103b01e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGRhdGElMjB2aXN1YWxpemF0aW9uJTIwZGFya3xlbnwwfHx8fDE3ODc4MTI2ODF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract colorful data lines on dark background. Use for left side of the login screen to add premium tech vibe."
+    },
+    "chart_placeholder": {
+      "url": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHwxfHxmaW5hbmNpYWwlMjBzdG9jayUyMG1hcmtldCUyMGNoYXJ0JTIwZGFya3xlbnwwfHx8fDE3ODc4MTI2ODF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Financial stock market chart on dark screen. Use as a placeholder if Recharts is not yet implemented or as an empty state for reports."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Build a standard React application (.js/.jsx format, NO TypeScript .tsx files) utilizing Tailwind CSS and Shadcn UI primitives.",
+    "Strictly follow the Dark-first theme logic, setting app-wide backgrounds to custom #09090B (bg-zinc-950).",
+    "Ensure the layout has a responsive Sidebar (left) and Header (top).",
+    "Add font imports to your main CSS file: @import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap'); and @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');",
+    "Update tailwind.config.js to include these fonts in theme.extend.fontFamily (sans, mono, and a specific heading font).",
+    "Use Phosphor icons for all iconography.",
+    "DO NOT add generic AI bot images or illustrations. Keep the UI typographic, sleek, and data-driven.",
+    "Implement Recharts for KPI charts with a dark aesthetic. Use JetBrains Mono for chart axis labels and tooltip numbers.",
+    "For the 'SeekProfit' brand logo in the sidebar, use raw text with 'Cabinet Grotesk' font, tracking-tight.",
+    "Add 'sonner' for toast notifications, maintaining dark mode aesthetics.",
+    "All interactive elements (buttons, links, inputs, dialogs) MUST have a 'data-testid' attribute in kebab-case."
+  ],
+  "universal_guidelines": [
+    "No centered layouts for app shells; respect natural left-to-right reading flow.",
+    "Do not use transparent backgrounds for dropdowns, overlays, or sticky headers. Ensure content behind is completely obscured.",
+    "Always apply micro-interactions (hover, active, focus) on buttons and links, but exclude transitions on transform if animating.",
+    "Incorporate 2-3x more spacing for structural layout wrappers (e.g., p-8 instead of p-4 on the main content area) to give the dense data room to breathe."
+  ]
+}
