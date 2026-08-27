@@ -1,17 +1,16 @@
-import { PlaceholderPage } from "@/components/shared/PlaceholderPage";
+import { ArrowsClockwise } from "@phosphor-icons/react";
+import { CategorySignalsPage } from "@/components/shared/CategorySignalsPage";
+import { PAGE } from "@/constants/testIds";
 
 export const RevenueRecoveryPage = () => (
-    <PlaceholderPage
+    <CategorySignalsPage
         slug="revenue-recovery"
+        testId={PAGE.revenueRecovery}
         eyebrow="Workspace"
         title="Revenue Recovery"
-        description="Surface unbilled services, dropped renewals and pricing gaps — then guide the workflow to reclaim them."
-        features={[
-            "Detect unbilled and under-billed services across your ledgers",
-            "Track lifecycle of every recovery case from open to collected",
-            "Prioritize by expected value and confidence",
-            "Assign, comment and resolve in a shared queue",
-        ]}
+        description="Unbilled services, dropped renewals and payment-term drift. Every finding cites the source records and comes with a recommended action."
+        category="revenue_recovery"
+        emptyIcon={ArrowsClockwise}
     />
 );
 

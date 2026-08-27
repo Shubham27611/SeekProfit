@@ -1,17 +1,16 @@
-import { PlaceholderPage } from "@/components/shared/PlaceholderPage";
+import { Lightbulb } from "@phosphor-icons/react";
+import { CategorySignalsPage } from "@/components/shared/CategorySignalsPage";
+import { PAGE } from "@/constants/testIds";
 
 export const OpportunitiesPage = () => (
-    <PlaceholderPage
+    <CategorySignalsPage
         slug="opportunities"
+        testId={PAGE.opportunities}
         eyebrow="Workspace"
         title="Opportunities"
-        description="High-impact revenue and margin plays scored by expected value, confidence and effort."
-        features={[
-            "Cross-sell and pricing uplift candidates",
-            "Working-capital and payment-terms optimizations",
-            "Cohort-based expansion signals",
-            "One-click hand-off to the Action Center",
-        ]}
+        description="High-impact revenue and margin plays scored by expected value, confidence and urgency."
+        category="opportunity"
+        emptyIcon={Lightbulb}
     />
 );
 

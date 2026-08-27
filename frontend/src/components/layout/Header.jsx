@@ -52,7 +52,7 @@ export const Header = ({ onOpenMobileNav, avatarUrl }) => {
             >
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" />
                 <span className="font-medium text-foreground">
-                    {user?.workspace || "Acme Financials"}
+                    {user?.workspace?.name || "Workspace"}
                 </span>
                 <span className="text-muted-foreground/70">/ Production</span>
             </div>

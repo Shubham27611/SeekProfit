@@ -5,7 +5,7 @@ export const ActionCenterPage = () => (
         slug="action-center"
         eyebrow="Workspace"
         title="Action Center"
-        description="The single queue where every SeekProfit finding turns into an owned, tracked action with measurable outcome."
+        description="The unified queue where every SeekProfit finding turns into an owned, tracked action with measurable outcome. Currently, actions are managed directly on each signal."
         features={[
             "Unified queue across leaks, recovery and opportunities",
             "Owner assignment, SLAs and status tracking",

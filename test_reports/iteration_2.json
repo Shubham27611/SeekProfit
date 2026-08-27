@@ -1,0 +1,61 @@
+{
+  "summary": "Stage-2 full-stack test of SeekProfit. Backend: 32 pytest cases across auth (register/duplicate-409/login-401/me/invite/bcrypt), workspace setup + demo seed (199 records, 15 signals), reseed idempotency, overview (4 KPIs / 8 trend buckets / feed), signals (sort, shape, category filter, detail, 404, resolve/dismiss/invalid-status), AI grounded ask, Claude enrichment + idempotency, and CSV import replace + 400 validation — 32/32 passing. Frontend: verified protected-route redirect, Google SSO redirect target, sign-up -> onboarding -> seeded /app/overview, KPI+Recharts+feed rendering, demo ribbon, Manage->Data Sources, AI Analysis (ask via chip and typed input, citation chips, enrich with toast 15 signals, 4 category tabs, card expand with explanation/action/evidence, resolve + dismiss removal), 3 category pages, Settings invite, CSV import success card + View Overview, Data Sources CSV-Active + reseed, and sign-out session clearing. Zero console errors across all runs. 3 real defects found (AI citation chips pointing at signal_ids, stale Imports 'Current dataset' panel, workspace currency ignored in formatting).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/ai/ask", "issue": "LLM emits [rec:sig_xxxxx] tokens containing SIGNAL ids, not record ids. Observed 6 of 10 emitted tokens were signal_ids that resolve to nothing in financial_records, so they are dropped from `citations` but still rendered as chips by the UI. _brief_for_ask() puts signal_id into the brief and ASK_SYSTEM never forbids citing them. Harden the prompt (cite ONLY record_id values; reference signals by title) and/or strip non-record tokens server-side before returning the answer."},
+      {"endpoint": "POST /api/signals/enrich", "issue": "Synchronous LLM fan-out takes ~46s for 15 signals (measured locally and via public URL). One run returned 502 Bad gateway from the ingress mid-test (reproducible risk, ~1 in 4). Move to a background task + polling, or batch/stream, so larger workspaces don't hit the gateway timeout."},
+      {"endpoint": "POST /api/signals/enrich", "issue": "Enriches ALL non-enriched signals including resolved/dismissed ones. UI showed 'Enrich with Claude (13 pending)' but response reported enriched=15, so the toast contradicts the button count."},
+      {"endpoint": "GET /api/overview, GET /api/signals", "issue": "services/finance.py format_currency() hardcodes '$' and ignores workspace.currency. A workspace onboarded with EUR shows 'EUR' in Settings but every KPI, impact_display and evidence amount_display renders with $."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ImportsPage", "issue": "'Current dataset' panel is fetched once in useEffect on mount and never refetched after a successful upload. After importing 8 CSV rows the panel still showed SOURCE=Demo, DEMO RECORDS=199, CSV RECORDS=0 while the success card correctly said '8 records loaded. 2 new signals detected.'", "selector": "[data-testid=\"page-imports\"]", "priority": "MEDIUM"},
+      {"component": "AIAnalysisPage renderAnswerWithCitations", "issue": "Renders an ai-citation-<id> chip for every [rec:...] token in the answer, including tokens that are not in `answer.citations`. Result: dead anchors (href=#sig_xxx with no matching li id). Only render chips for ids present in the citations array.", "selector": "[data-testid^=\"ai-citation-\"]", "priority": "HIGH"},
+      {"component": "AIAnalysisPage citation list", "issue": "Cited-record amounts are hardcoded as `${Number(c.amount)}` — ignores workspace currency.", "selector": "[data-testid=\"ai-answer\"]", "priority": "LOW"},
+      {"component": "AIAnalysisPage enrich button", "issue": "'(N pending)' is derived from the currently-filtered signal list, so switching to a category tab makes the count show only that category's pending signals while the button enriches the whole workspace.", "selector": "[data-testid=\"ai-enrich-button\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Overview", "issues": ["Revenue-recovery chart card is stretched to match the taller Signal-feed column, leaving ~160px of empty space under the h-64 chart at 1920x1080."]},
+      {"screen": "Login", "issues": ["Left hero column leaves large vertical voids at 1080px height (content is pinned top/middle/bottom with no mid-band content)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/diag_enrich.py",
+    "/app/test_reports/pytest/pytest_results_core.xml",
+    "/app/test_reports/pytest/pytest_results_imports.xml",
+    "/app/test_reports/pytest/pytest_results_ai.xml",
+    "/app/test_reports/pytest/pytest_results_ai_enrich.xml"
+  ],
+  "action_items": [
+    "Harden ASK_SYSTEM prompt so Claude cites ONLY record_id values, and filter non-record [rec:] tokens out of the answer server-side in /api/ai/ask.",
+    "In AIAnalysisPage, only render citation chips for ids present in answer.citations (drop dead anchors).",
+    "Refetch /workspace/me after a successful CSV upload so the Imports 'Current dataset' panel is not stale.",
+    "Thread workspace.currency through services/finance.py format_currency() and the frontend amount formatting instead of hardcoding '$'.",
+    "Make /api/signals/enrich non-blocking (background task + status polling) — 46s synchronous call intermittently 502s through the ingress.",
+    "Exclude closed (resolved/dismissed) signals from /api/signals/enrich, or align the UI 'N pending' count with what the endpoint actually processes."
+  ],
+  "critical_code_review_comments": [
+    "DRY: the identical `_wid()` / workspace-lookup helper is duplicated in routers/signals.py, routers/ai.py, routers/imports.py, routers/overview.py and routers/onboarding.py. Extract into a single FastAPI dependency (e.g. core/deps.py get_workspace_id).",
+    "routers/ai.py imports private symbols (`_collect`, `_chat`, `ASK_SYSTEM`, `_brief_for_ask`) from services.llm_analyst inside the handler body; promote a public `ask()` service function instead.",
+    "/api/ai/ask loads 500 records + 200 signals on every question with no cache — will not scale once a workspace has real volume.",
+    "constants/testIds.js has drifted: none of the Stage-2 ids (ai-*, imports-*, settings-*, signal-*, onboarding-*, data-source-*) are in the registry — they are hardcoded strings in the components, defeating the registry's purpose.",
+    "routers/imports.py deletes the entire workspace dataset (financial_records + signals) BEFORE insert_many succeeds — a failed insert leaves the workspace empty with no rollback."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/diag_enrich.py"
+  ],
+  "success_rate": {"backend": "100% (32/32 pytest)", "frontend": "100% of flows reachable; 4 UI defects found"},
+  "seed_data_creation": "Registered throwaway users on @seekprofit-qa.com (note: EmailStr rejects .test/.example TLDs as special-use, so tests must not use them). Primary UI account: uitest_i8fwx97u@seekprofit-qa.com / Testpass123 (E-commerce, EUR, demo dataset re-seeded at end of run, 1 pending invite colleague_qa@seekprofit-qa.com). Demo account cfo@demo.seekprofit.app / demo1234 verified intact with 199 records.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "cfo@demo.seekprofit.app / demo1234 (pre-existing, seeded). uitest_i8fwx97u@seekprofit-qa.com / Testpass123 (created by this run, seeded + enriched). /app/memory/test_credentials.md present and accurate.",
+  "context_for_next_testing_agent": "Run backend suite with: cd /app/backend && python -m pytest tests/backend_test.py -v (pytest.ini forces -n 2 --dist loadscope; do not edit it). Split runs by -k when hitting the 300s tool cap: core (~5s), TestImports (~2s), TestAI (~75s incl. two live Claude calls). IMPORTANT: pydantic EmailStr rejects .test/.example/.invalid TLDs — use @seekprofit-qa.com for generated emails. Playwright caveats: (1) f-strings cannot contain backslashes/escaped quotes — hoist selectors into variables; (2) the FIRST signal card on the AI Analysis 'All signals' tab is defaultOpen, so clicking its toggle collapses it — expand the 2nd card instead; (3) /api/signals/enrich takes ~46s, poll toasts up to 150s. Not yet covered: Google OAuth callback exchange (/auth/callback + /api/auth/google/callback), invited-user actually signing in and joining the owner's workspace, Action Center and Reports pages, mobile/tablet viewports for the Stage-2 pages, Export brief and Last-8-months buttons on Overview, and the 'Take action' (in_progress) signal button.",
+  "rca_of_the_issue": "AI citation defect: _brief_for_ask() serializes signals (including signal_id) into the same JSON brief as financial records, and ASK_SYSTEM only says 'cite the specific record_ids you used as [rec:record_id]'. With both id namespaces present and no negative constraint, Claude cites signal_ids too. /api/ai/ask then resolves tokens against financial_records only, so sig_* tokens silently produce no citation entry — yet renderAnswerWithCitations() regex-matches every [rec:...] token and renders a chip whose href anchor has no target. Reproduce: log in, /app/ai-analysis, ask 'Which duplicate vendor payment should I claw back first?' — 10 chips render, only the 4 ven_* ones appear in the 'Cited records' list. Mitigation: forbid signal_id citation in the prompt, strip unresolved tokens server-side, and gate chip rendering on membership in answer.citations."
+}

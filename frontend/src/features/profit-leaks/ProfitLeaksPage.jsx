@@ -1,17 +1,16 @@
-import { PlaceholderPage } from "@/components/shared/PlaceholderPage";
+import { Warning } from "@phosphor-icons/react";
+import { CategorySignalsPage } from "@/components/shared/CategorySignalsPage";
+import { PAGE } from "@/constants/testIds";
 
 export const ProfitLeaksPage = () => (
-    <PlaceholderPage
+    <CategorySignalsPage
         slug="profit-leaks"
+        testId={PAGE.profitLeaks}
         eyebrow="Workspace"
         title="Profit Leaks"
-        description="Continuously scan spend, contracts and operations for duplicate charges, waste and margin erosion."
-        features={[
-            "Duplicate payment and vendor overlap detection",
-            "Contract price-drift monitoring",
-            "Discount and rebate leakage analysis",
-            "Root-cause traces linked to source documents",
-        ]}
+        description="Duplicate payments, overlapping subscriptions and other silent margin erosion — with source-linked evidence."
+        category="profit_leak"
+        emptyIcon={Warning}
     />
 );
 

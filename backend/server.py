@@ -1,89 +1,81 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+"""SeekProfit — FastAPI entry.
+
+Wires up routers, CORS, MongoDB indexes, and health checks. All business logic
+lives in the `core/`, `services/`, and `routers/` modules.
+"""
+from __future__ import annotations
 import logging
+import os
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
 
+from dotenv import load_dotenv
 
+# Load env BEFORE any other imports that may read environment variables.
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from fastapi import FastAPI  # noqa: E402
+from starlette.middleware.cors import CORSMiddleware  # noqa: E402
 
-# Create the main app without a prefix
-app = FastAPI()
+from core.db import get_db, close_client  # noqa: E402
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# Routers
+from routers.auth import router as auth_router  # noqa: E402
+from routers.onboarding import router as onboarding_router  # noqa: E402
+from routers.overview import router as overview_router  # noqa: E402
+from routers.signals import router as signals_router  # noqa: E402
+from routers.ai import router as ai_router  # noqa: E402
+from routers.imports import router as imports_router  # noqa: E402
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("seekprofit")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+app = FastAPI(title="SeekProfit API", version="1.0.0")
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "seekprofit"}
 
-# Include the router in the main app
-app.include_router(api_router)
+
+# Mount routers
+app.include_router(auth_router)
+app.include_router(onboarding_router)
+app.include_router(overview_router)
+app.include_router(signals_router)
+app.include_router(ai_router)
+app.include_router(imports_router)
+
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def on_startup():
+    db = get_db()
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("user_id", unique=True)
+    await db.workspaces.create_index("workspace_id", unique=True)
+    await db.workspaces.create_index("owner_user_id")
+    await db.workspaces.create_index("invited_emails")
+    await db.financial_records.create_index([("workspace_id", 1), ("record_id", 1)], unique=True)
+    await db.financial_records.create_index([("workspace_id", 1), ("type", 1)])
+    await db.signals.create_index([("workspace_id", 1), ("signal_id", 1)], unique=True)
+    await db.signals.create_index([("workspace_id", 1), ("status", 1)])
+    logger.info("SeekProfit indexes ready")
+
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+async def on_shutdown():
+    close_client()

@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="47.665" timestamp="2026-08-27T07:38:40.763580+00:00" hostname="agent-env-19d14db4-f716-4c35-aeb3-26494e570e37"><testcase classname="tests.backend_test.TestAI" name="test_enrich_then_idempotent" time="47.344" /></testsuite></testsuites>
