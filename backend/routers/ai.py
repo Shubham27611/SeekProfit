@@ -11,31 +11,36 @@ from pydantic import BaseModel, Field
 
 from core.db import get_db
 from core.security import get_current_user, decode_token
-from services.finance import compute_kpis
+from services.finance import compute_kpis, format_amount_exact
 from services.llm_analyst import (
     stream_ask,
     _brief_for_ask,
     _chat,
     _collect,
-    ASK_SYSTEM,
+    build_ask_system,
 )
 
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 
-async def _wid(user: dict) -> str:
+async def _wid_and_currency(user: dict) -> tuple[str, str]:
     db = get_db()
     ws = await db.workspaces.find_one(
         {"$or": [
             {"owner_user_id": user["user_id"]},
             {"invited_emails": user["email"]},
         ]},
-        {"_id": 0, "workspace_id": 1},
+        {"_id": 0, "workspace_id": 1, "currency": 1},
     )
     if not ws:
         raise HTTPException(status_code=404, detail="No workspace.")
-    return ws["workspace_id"]
+    return ws["workspace_id"], ws.get("currency", "USD")
+
+
+async def _wid(user: dict) -> str:
+    wid, _ = await _wid_and_currency(user)
+    return wid
 
 
 async def _load_context(wid: str):
@@ -46,8 +51,10 @@ async def _load_context(wid: str):
     return records, signals, kpis
 
 
-async def _resolve_citations(wid: str, text: str):
-    """Return (filtered_text, citations[]) — dead [rec:...] tokens stripped."""
+async def _resolve_citations(wid: str, text: str, currency: str = "USD"):
+    """Return (filtered_text, citations[]) — dead [rec:...] tokens stripped
+    AND internal brief/JSON field names scrubbed out of the answer so they
+    never leak to a CFO-facing surface."""
     cited_ids = list(set(re.findall(r"\[rec:([a-zA-Z0-9_\-]+)\]", text)))
     citations: list = []
     valid_ids: set = set()
@@ -63,6 +70,7 @@ async def _resolve_citations(wid: str, text: str):
                 "type": r["type"],
                 "date": r["date"],
                 "amount": r["amount"],
+                "amount_display": format_amount_exact(r.get("amount", 0), currency),
                 "counterparty": r["counterparty"],
                 "memo": r.get("memo"),
             })
@@ -71,7 +79,27 @@ async def _resolve_citations(wid: str, text: str):
         lambda m: m.group(0) if m.group(1) in valid_ids else "",
         text,
     )
+    filtered = _scrub_internal_terms(filtered)
     return filtered, citations
+
+
+# Deterministic replacement of internal field/data-shape names that must
+# never appear in analyst answers.
+_INTERNAL_TERM_SUBS = [
+    (re.compile(r"\bprior_recovery_available\b", re.IGNORECASE), "prior-recovery data"),
+    (re.compile(r"\bdataset_facts\b", re.IGNORECASE), "the current dataset"),
+    (re.compile(r"\bthe brief\b", re.IGNORECASE), "the current dataset"),
+    (re.compile(r"\bthis brief\b", re.IGNORECASE), "the current dataset"),
+    (re.compile(r"\bthe JSON( brief)?\b", re.IGNORECASE), "the current dataset"),
+    (re.compile(r"\btop_signals\b", re.IGNORECASE), "top findings"),
+    (re.compile(r"\bsample_records\b", re.IGNORECASE), "sampled records"),
+]
+
+
+def _scrub_internal_terms(text: str) -> str:
+    for pattern, replacement in _INTERNAL_TERM_SUBS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class AskInput(BaseModel):
@@ -81,18 +109,24 @@ class AskInput(BaseModel):
 @router.post("/ask")
 async def ask(payload: AskInput, current_user: dict = Depends(get_current_user)):
     """Non-streaming Q&A — returns {"answer": str, "citations": [record_ids]}."""
-    wid = await _wid(current_user)
+    wid, currency = await _wid_and_currency(current_user)
     records, signals, kpis = await _load_context(wid)
 
-    brief = _brief_for_ask(kpis, signals, records)
+    brief = _brief_for_ask(kpis, signals, records, currency)
     prompt = (
         "Answer the CFO's question using ONLY the brief below. Cite record_ids "
         "inline as [rec:<id>]. Keep the answer under ~180 words unless the "
-        "question demands more.\n\n"
+        "question demands more. Remember: the brief's `dataset_facts` block "
+        "contains the ONLY prior-recovery figure that exists — if "
+        "`prior_recovery_available` is false, do not claim any money has been "
+        "recovered previously.\n\n"
         f"Question: {payload.question}\n\n"
         f"Brief:\n{json.dumps(brief)[:80_000]}"
     )
-    chat = _chat(session_id=f"ask-{current_user['user_id']}", system=ASK_SYSTEM)
+    chat = _chat(
+        session_id=f"ask-{current_user['user_id']}",
+        system=build_ask_system(currency),
+    )
     try:
         text = await _collect(chat, prompt)
     except Exception as e:
@@ -102,7 +136,7 @@ async def ask(payload: AskInput, current_user: dict = Depends(get_current_user))
             "page remain valid — try the question again in a moment."
         )
 
-    filtered, citations = await _resolve_citations(wid, text)
+    filtered, citations = await _resolve_citations(wid, text, currency)
     return {"answer": filtered, "citations": citations}
 
 
@@ -140,7 +174,7 @@ async def ask_stream(
        event: done    data: {"citations": [...]}
        event: error   data: {"detail": "..."}
     """
-    wid = await _wid(current_user)
+    wid, currency = await _wid_and_currency(current_user)
     records, signals, kpis = await _load_context(wid)
 
     async def _generate():
@@ -156,6 +190,7 @@ async def ask_stream(
                 kpis=kpis,
                 signals=signals,
                 records=records,
+                currency=currency,
             ):
                 if not chunk:
                     continue
@@ -166,7 +201,7 @@ async def ask_stream(
             return
 
         full_text = "".join(collected_parts).strip()
-        filtered, citations = await _resolve_citations(wid, full_text)
+        filtered, citations = await _resolve_citations(wid, full_text, currency)
         # Send corrected text (dead tokens stripped) so the client can render
         # a clean final version, then the citation list.
         final_payload = {"text": filtered, "citations": citations}

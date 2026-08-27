@@ -110,6 +110,12 @@ async def upload_csv(
     for r in records:
         r["workspace_id"] = wid
 
+    # Determine dominant currency from the CSV. Records that don't specify one
+    # default to USD in _parse_csv, so this gracefully picks the majority.
+    from collections import Counter
+    currency_counts = Counter((r.get("currency") or "USD").upper() for r in records)
+    dominant_currency = currency_counts.most_common(1)[0][0] if currency_counts else "USD"
+
     db = get_db()
     # Replace previous CSV/demo data completely and re-run detectors.
     await db.financial_records.delete_many({"workspace_id": wid})
@@ -122,7 +128,7 @@ async def upload_csv(
     signal_docs = []
     for s in signals:
         ev = [id_to_r[rid] for rid in s["evidence_record_ids"] if rid in id_to_r]
-        fb = _fallback_explanation(s, ev)
+        fb = _fallback_explanation(s, ev, dominant_currency)
         signal_docs.append({
             "signal_id": f"sig_{uuid.uuid4().hex[:12]}",
             "workspace_id": wid,
@@ -143,6 +149,7 @@ async def upload_csv(
         {"$set": {
             "is_seeded": True,
             "data_source": "csv",
+            "currency": dominant_currency,
             "last_import_at": now,
         }},
     )
@@ -150,4 +157,5 @@ async def upload_csv(
         "ok": True,
         "imported_records": len(records),
         "generated_signals": len(signal_docs),
+        "currency": dominant_currency,
     }

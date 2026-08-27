@@ -1,12 +1,14 @@
 """LLM analyst wrapper — Claude Sonnet 4.6 via emergentintegrations.
 
-The LLM ONLY (a) writes human-facing explanation + recommended_action strings
-for deterministically-detected signals, and (b) answers ad-hoc Q&A grounded
-strictly in the compact structured brief the caller assembles from Mongo.
-
-It CANNOT invent transactions, customers, invoices, or figures because it
-never sees free-form text — it sees a JSON brief and is instructed to cite
-record IDs from that brief only.
+Grounding contract:
+- The LLM never invents transactions, customers, vendors, invoices, payments,
+  savings, recovered amounts, prior actions, or business processes.
+- It reasons ONLY over the structured JSON brief the caller assembles from
+  Mongo, which includes an explicit currency + symbol.
+- Confidence != confirmation. High confidence is described as
+  "high-confidence finding" or "potential/likely", not "confirmed".
+- Missing information must be stated explicitly ("No prior recovery amount is
+  available in the current dataset.") — never filled with assumptions.
 """
 from __future__ import annotations
 import json
@@ -20,17 +22,69 @@ from emergentintegrations.llm.chat import (
     StreamDone,
 )
 
-
-SYSTEM_ANALYST = (
-    "You are SeekProfit's senior financial analyst. You reason ONLY over the "
-    "structured JSON brief that will be provided. You NEVER invent customers, "
-    "vendors, invoices, or dollar amounts. Every citation must be a record_id "
-    "that appears in the brief. Be concise, precise, and use the language a "
-    "seasoned CFO would use — no fluff, no emojis, no bullet-heavy prose."
-)
+from services.finance import currency_symbol, format_amount_exact
 
 
-def _chat(session_id: str, system: str = SYSTEM_ANALYST) -> LlmChat:
+# ---------------------------------------------------------------------------
+# System prompts
+# ---------------------------------------------------------------------------
+
+def build_system_prompt(currency: str) -> str:
+    sym = currency_symbol(currency)
+    code = (currency or "USD").upper()
+    return (
+        "You are SeekProfit's senior financial analyst. You reason ONLY over "
+        "the structured JSON brief the user provides. "
+        "\n\n"
+        "STRICT GROUNDING RULES — FOLLOW WITHOUT EXCEPTION:\n"
+        "1. Every named amount, count, customer, vendor, invoice, payment, "
+        "date, or business fact MUST come directly from the brief. Do NOT "
+        "invent transactions, savings, recovered amounts, prior actions, or "
+        "customer behaviour that is not in the brief.\n"
+        "2. NEVER claim money has already been recovered, saved, actioned, or "
+        "acted upon UNLESS a signal in the brief has status='resolved' with "
+        "an impact_amount. If the user asks about prior recovery, respond: "
+        "'No prior recovery amount is available in the current dataset.'\n"
+        "3. Confidence != confirmation. Do NOT use the word 'confirmed' or "
+        "'definitively' for pattern-detected findings. Use phrases like "
+        "'potential', 'likely', 'high-confidence finding', or 'requires "
+        "review'. A 90% confidence detection is a HIGH-CONFIDENCE FINDING, "
+        "not a CONFIRMED duplicate.\n"
+        f"4. Currency: every amount in the brief is in {code}. Use the "
+        f"symbol '{sym}' in your answer. NEVER use another currency symbol.\n"
+        "5. When calculating recoverable amounts for duplicate-style "
+        "findings, use only the excess (e.g. two identical payments of "
+        f"{sym}27,500 imply a recoverable {sym}27,500 — not {sym}55,000).\n"
+        "6. Prefer visibly-grounded phrasing: 'Based on N transactions in "
+        "the dataset...' rather than unqualified claims.\n"
+        "7. When information is missing say so explicitly (e.g. 'No payment "
+        "record was found for this invoice.', 'Insufficient data to "
+        "determine whether this is a confirmed duplicate.'). Never fill "
+        "missing data with assumptions.\n"
+        "\n"
+        "STYLE: concise CFO tone. Short paragraphs. No emojis, no markdown "
+        "headings, no **bold**, no bullet dashes. NEVER mention 'the brief', "
+        "'the JSON', 'dataset_facts', 'prior_recovery_available', or any "
+        "internal field name — refer to the data as 'the current dataset' "
+        "or 'the imported records'."
+    )
+
+
+def build_ask_system(currency: str) -> str:
+    return (
+        build_system_prompt(currency)
+        + "\n\nCITATIONS: When answering, cite the specific record_ids you "
+        "used, formatted as `[rec:record_id]` inline. Only cite values from "
+        "the `sample_records` list — NEVER cite signal_ids or any other "
+        "identifier. Refer to signals by their title, not their id."
+    )
+
+
+# ---------------------------------------------------------------------------
+# LlmChat helpers
+# ---------------------------------------------------------------------------
+
+def _chat(session_id: str, system: str) -> LlmChat:
     key = os.environ["EMERGENT_LLM_KEY"]
     return LlmChat(
         api_key=key,
@@ -40,7 +94,6 @@ def _chat(session_id: str, system: str = SYSTEM_ANALYST) -> LlmChat:
 
 
 async def _collect(chat: LlmChat, prompt: str) -> str:
-    """Convenience: run stream_message and collect the full text."""
     parts: List[str] = []
     async for ev in chat.stream_message(UserMessage(text=prompt)):
         if isinstance(ev, TextDelta):
@@ -51,21 +104,24 @@ async def _collect(chat: LlmChat, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Explain a deterministically-detected signal
+# Signal explanation
 # ---------------------------------------------------------------------------
 
-async def explain_signal(session_id: str, signal: dict, evidence: List[dict]) -> dict:
-    """Return {"explanation": str, "recommended_action": str} for a signal.
-
-    Falls back to a rule-based template if the LLM call errors — the demo
-    never breaks because of an LLM outage.
-    """
+async def explain_signal(
+    session_id: str,
+    signal: dict,
+    evidence: List[dict],
+    currency: str = "USD",
+) -> dict:
+    """Return {"explanation": str, "recommended_action": str} for a signal."""
     brief = {
+        "currency": {"code": (currency or "USD").upper(), "symbol": currency_symbol(currency)},
         "signal": {
             "title": signal["title"],
             "category": signal["category"],
             "detector": signal["detector"],
-            "impact_amount_usd": signal["impact_amount"],
+            "impact_amount": signal["impact_amount"],
+            "impact_display": format_amount_exact(signal["impact_amount"], currency),
             "amount_type": signal["amount_type"],
             "confidence": signal["confidence"],
             "urgency": signal["urgency"],
@@ -73,16 +129,18 @@ async def explain_signal(session_id: str, signal: dict, evidence: List[dict]) ->
         "evidence_records": evidence[:10],
     }
     prompt = (
-        "Write a concise financial-analyst explanation and a concrete recommended "
-        "action for the following signal. Cite specific record IDs from "
-        "`evidence_records` that support your reasoning. Return ONLY valid JSON "
-        "with keys `explanation` and `recommended_action` — no prose outside JSON.\n\n"
+        "Write a concise financial-analyst explanation and a concrete "
+        "recommended action for the following signal. Cite specific "
+        "record_ids from `evidence_records`. Respect the grounding rules "
+        "in your system message: no invented facts, no 'confirmed' unless "
+        "explicitly verified, use the currency symbol from `currency.symbol`.\n"
+        "Return ONLY valid JSON with keys `explanation` and "
+        "`recommended_action` — no prose outside JSON.\n\n"
         "Brief:\n" + json.dumps(brief, indent=2)
     )
-    chat = _chat(session_id)
+    chat = _chat(session_id, build_system_prompt(currency))
     try:
         raw = await _collect(chat, prompt)
-        # Strip common code-fence wrapping if present.
         if raw.startswith("```"):
             raw = raw.strip("`")
             if raw.lower().startswith("json"):
@@ -94,19 +152,30 @@ async def explain_signal(session_id: str, signal: dict, evidence: List[dict]) ->
         }
     except Exception as e:
         print(f"[llm.explain_signal] fallback due to: {e}")
-        return _fallback_explanation(signal, evidence)
+        return _fallback_explanation(signal, evidence, currency)
 
 
-def _fallback_explanation(signal: dict, evidence: List[dict]) -> dict:
+def _fallback_explanation(
+    signal: dict, evidence: List[dict], currency: str = "USD"
+) -> dict:
     detector = signal["detector"]
     ids = ", ".join(r.get("record_id", "?") for r in evidence[:3])
+    n_ev = len(evidence)
+    impact_disp = format_amount_exact(signal.get("impact_amount", 0), currency)
     templates = {
         "duplicate_vendor_payment": (
-            f"Two or more payments to the same vendor were posted within a 3-day window at an identical amount. Records {ids} show the pattern.",
-            "Verify the vendor invoice was not issued twice, then request reversal of the duplicate charge with the vendor's AP team.",
+            (
+                f"Based on {n_ev} vendor bills in the dataset, we identified a "
+                f"potential duplicate payment pattern — the same vendor was "
+                f"charged the same amount within a 3-day window. Records {ids} "
+                f"support the finding. This is a high-confidence detection, "
+                f"not a confirmed duplicate; the recoverable amount is the "
+                f"excess only ({impact_disp})."
+            ),
+            "Review the referenced records with AP, verify that no legitimate second invoice was issued for the same service, and request a vendor credit for the excess payment.",
         ),
         "overlapping_subscription": (
-            f"Multiple line items for the same vendor billed within the same month at the canonical seat price — see {ids}.",
+            f"Based on {n_ev} vendor bills, the same vendor was billed more than once per month at the same seat price — see {ids}. This is a likely subscription overlap.",
             "Audit active subscription seats against actual users and consolidate to a single billing account.",
         ),
         "unbilled_services": (
@@ -114,8 +183,8 @@ def _fallback_explanation(signal: dict, evidence: List[dict]) -> dict:
             "Generate and send the missing invoice for the affected period(s); reconcile against the customer's payment plan.",
         ),
         "late_paying_customer": (
-            f"This customer's average time-to-pay has drifted past the 45-day threshold across recent payments — evidence in {ids}.",
-            "Send a payment-terms reminder, tighten the next contract cycle, and consider offering a 1-2% early-pay discount.",
+            f"This customer's average time-to-pay has drifted past the 45-day threshold across the payments in the dataset — evidence in {ids}.",
+            "Send a payment-terms reminder, tighten the next contract cycle, and consider offering a small early-pay discount.",
         ),
         "renewal_uplift": (
             f"Contract {ids} is within the renewal window at a price below observed market median for comparable engagements.",
@@ -130,23 +199,66 @@ def _fallback_explanation(signal: dict, evidence: List[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Ad-hoc Q&A — streaming
+# Ask-anything Q&A
 # ---------------------------------------------------------------------------
 
-def _brief_for_ask(kpis: dict, signals: List[dict], records: List[dict]) -> dict:
-    """Compact JSON brief the model reasons over."""
+def _brief_for_ask(
+    kpis: dict,
+    signals: List[dict],
+    records: List[dict],
+    currency: str = "USD",
+) -> dict:
+    code = (currency or "USD").upper()
+    sym = currency_symbol(currency)
+
+    # Deterministic aggregates the model can rely on without re-computing.
+    resolved_recovery = sum(
+        float(s.get("impact_amount", 0))
+        for s in signals
+        if s.get("status") == "resolved"
+        and s.get("category") == "revenue_recovery"
+    )
+    open_recovery = sum(
+        float(s.get("impact_amount", 0))
+        for s in signals
+        if s.get("status") == "open" and s.get("category") == "revenue_recovery"
+    )
+    open_leak = sum(
+        float(s.get("impact_amount", 0))
+        for s in signals
+        if s.get("status") == "open" and s.get("category") == "profit_leak"
+    )
+    open_opp = sum(
+        float(s.get("impact_amount", 0))
+        for s in signals
+        if s.get("status") == "open" and s.get("category") == "opportunity"
+    )
+
     return {
+        "currency": {"code": code, "symbol": sym},
+        "dataset_facts": {
+            "records_count": len(records),
+            "signals_count": len(signals),
+            "prior_recovery_amount": resolved_recovery,
+            "prior_recovery_display": format_amount_exact(resolved_recovery, currency),
+            "prior_recovery_available": resolved_recovery > 0,
+            "open_recovery_display": format_amount_exact(open_recovery, currency),
+            "open_leak_display": format_amount_exact(open_leak, currency),
+            "open_opportunity_display": format_amount_exact(open_opp, currency),
+        },
         "kpis": kpis,
         "top_signals": [
             {
                 "signal_id": s.get("signal_id"),
                 "title": s.get("title"),
                 "category": s.get("category"),
-                "impact_amount_usd": s.get("impact_amount"),
+                "impact_amount": s.get("impact_amount"),
+                "impact_display": format_amount_exact(s.get("impact_amount", 0), currency),
                 "amount_type": s.get("amount_type"),
                 "confidence": s.get("confidence"),
                 "urgency": s.get("urgency"),
                 "priority_score": s.get("priority_score"),
+                "status": s.get("status", "open"),
                 "evidence_record_ids": s.get("evidence_record_ids"),
             }
             for s in signals[:15]
@@ -157,6 +269,7 @@ def _brief_for_ask(kpis: dict, signals: List[dict], records: List[dict]) -> dict
                 "type": r["type"],
                 "date": r["date"],
                 "amount": r["amount"],
+                "amount_display": format_amount_exact(r.get("amount", 0), currency),
                 "counterparty": r["counterparty"],
                 "status": r.get("status"),
                 "memo": r.get("memo"),
@@ -166,35 +279,26 @@ def _brief_for_ask(kpis: dict, signals: List[dict], records: List[dict]) -> dict
     }
 
 
-ASK_SYSTEM = (
-    SYSTEM_ANALYST
-    + " When answering, cite the specific record_ids you used, formatted as "
-    "`[rec:record_id]` inline. IMPORTANT: only ever cite values from the "
-    "`sample_records` list — NEVER cite signal_ids or any other identifier. "
-    "Refer to signals by their title, not their id. If the brief does not "
-    "contain enough data to answer, say so explicitly rather than guessing. "
-    "Do NOT use markdown syntax (no `##`, no `**bold**`, no bullet dashes) — "
-    "write clean prose in short paragraphs."
-)
-
-
 async def stream_ask(
     session_id: str,
     question: str,
     kpis: dict,
     signals: List[dict],
     records: List[dict],
+    currency: str = "USD",
 ) -> AsyncIterator[str]:
-    """Yield text deltas for a user Q&A."""
-    brief = _brief_for_ask(kpis, signals, records)
+    brief = _brief_for_ask(kpis, signals, records, currency)
     prompt = (
         "Answer the CFO's question using ONLY the brief below. Cite record_ids "
         "inline as [rec:<id>]. Keep the answer under ~180 words unless the "
-        "question demands more.\n\n"
+        "question demands more. Remember: the brief's `dataset_facts` block "
+        "contains the ONLY prior-recovery figure that exists — if "
+        "`prior_recovery_available` is false, do not claim any money has been "
+        "recovered previously.\n\n"
         f"Question: {question}\n\n"
         f"Brief:\n{json.dumps(brief)[:80_000]}"
     )
-    chat = _chat(session_id, ASK_SYSTEM)
+    chat = _chat(session_id, build_ask_system(currency))
     try:
         async for ev in chat.stream_message(UserMessage(text=prompt)):
             if isinstance(ev, TextDelta):
@@ -207,3 +311,11 @@ async def stream_ask(
             "I couldn't reach the analysis service just now. "
             "The deterministic signals on this page remain valid — try the question again in a moment."
         )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat exports (older modules import these names)
+# ---------------------------------------------------------------------------
+
+SYSTEM_ANALYST = build_system_prompt("USD")
+ASK_SYSTEM = build_ask_system("USD")

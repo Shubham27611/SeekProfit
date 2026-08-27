@@ -55,7 +55,7 @@ def _sla_status(due_iso: Optional[str], status: str) -> Optional[str]:
     return "on_track"
 
 
-def _serialize(sig: dict, evidence: list[dict]) -> dict:
+def _serialize(sig: dict, evidence: list[dict], currency: str = "USD") -> dict:
     return {
         "signal_id": sig["signal_id"],
         "title": sig["title"],
@@ -64,7 +64,7 @@ def _serialize(sig: dict, evidence: list[dict]) -> dict:
         "tone": CATEGORY_TONE.get(sig["category"], "warning"),
         "detector": sig["detector"],
         "impact_amount": sig["impact_amount"],
-        "impact_display": format_currency(sig["impact_amount"]),
+        "impact_display": format_currency(sig["impact_amount"], currency),
         "amount_type": sig["amount_type"],
         "confidence": sig["confidence"],
         "urgency": sig["urgency"],
@@ -85,7 +85,7 @@ def _serialize(sig: dict, evidence: list[dict]) -> dict:
                 "type": r["type"],
                 "date": r["date"],
                 "amount": r["amount"],
-                "amount_display": format_currency(r["amount"]),
+                "amount_display": format_currency(r["amount"], currency),
                 "counterparty": r["counterparty"],
                 "memo": r.get("memo"),
                 "status": r.get("status"),
@@ -119,7 +119,9 @@ async def list_signals(
     current_user: dict = Depends(get_current_user),
 ):
     db = get_db()
-    wid = await _wid(current_user)
+    ws = await _workspace(current_user)
+    wid = ws["workspace_id"]
+    currency = ws.get("currency", "USD")
     q: dict = {"workspace_id": wid}
     if category:
         q["category"] = category
@@ -144,14 +146,16 @@ async def list_signals(
     out = []
     for s in sigs[:limit]:
         ev = [ev_map[rid] for rid in s.get("evidence_record_ids", []) if rid in ev_map]
-        out.append(_serialize(s, ev))
+        out.append(_serialize(s, ev, currency))
     return {"signals": out, "total": len(out)}
 
 
 @router.get("/{signal_id}")
 async def get_signal(signal_id: str, current_user: dict = Depends(get_current_user)):
     db = get_db()
-    wid = await _wid(current_user)
+    ws = await _workspace(current_user)
+    wid = ws["workspace_id"]
+    currency = ws.get("currency", "USD")
     s = await db.signals.find_one({"workspace_id": wid, "signal_id": signal_id}, {"_id": 0})
     if not s:
         raise HTTPException(status_code=404, detail="Signal not found.")
@@ -159,7 +163,7 @@ async def get_signal(signal_id: str, current_user: dict = Depends(get_current_us
         {"workspace_id": wid, "record_id": {"$in": s.get("evidence_record_ids", [])}},
         {"_id": 0},
     ).to_list(50)
-    return _serialize(s, ev)
+    return _serialize(s, ev, currency)
 
 
 class StatusInput(BaseModel):
@@ -238,7 +242,9 @@ async def enrich_all_signals(current_user: dict = Depends(get_current_user)):
     """Rewrite explanations + recommended actions using the LLM analyst.
     Idempotent — signals already marked ai_enriched are skipped."""
     db = get_db()
-    wid = await _wid(current_user)
+    ws = await _workspace(current_user)
+    wid = ws["workspace_id"]
+    currency = ws.get("currency", "USD")
     sigs = await db.signals.find(
         {
             "workspace_id": wid,
@@ -260,7 +266,7 @@ async def enrich_all_signals(current_user: dict = Depends(get_current_user)):
         ev = [id_to_ev[i] for i in s.get("evidence_record_ids", []) if i in id_to_ev]
         session = f"signal-{s['signal_id']}"
         try:
-            result = await explain_signal(session, s, ev)
+            result = await explain_signal(session, s, ev, currency)
         except Exception as exc:
             print(f"[enrich] llm error: {exc}")
             return

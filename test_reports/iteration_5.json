@@ -1,0 +1,73 @@
+{
+  "summary": "Backend-only retest of the iteration-5 patch (measured-only Revenue Recovered KPI + prompt ban on internal field names). New suite /app/backend/tests/test_grounding_kpi_only.py (15 cases, 3 classes) -> 12 passed / 3 failed, results stable across two runs. Iteration-4 suite /app/backend/tests/test_currency_grounding.py re-run -> 16/16 PASS (after one in-scope test-assertion fix, see updated_files). VERIFIED WORKING: (1) fresh user -> onboarding USD -> POST /api/imports/csv with the 9-row all-INR CSV -> currency=INR, 9 records, 3 signals; (2) GET /api/overview on the unresolved workspace: workspace.currency=INR, recovered KPI value_display=='INR 0' (rupee zero) with hint 'no prior recovery in this dataset', potential KPI shows a rupee amount > 0 (INR 1.10M), leaks=2 and actions=2 KPIs render; (3) GET /api/reports/executive: headline.revenue_recovered_amount==0, revenue_recovered_display=='rupee 0', open_pipeline_amount==1127500.0 (>0), every trend[].recovered==0.0 and trend[-3:].potential>0; (4) GET /api/signals: both 'Potential duplicate payment - Ad Network India' (27500) and '- Cloud Vendor' (46000) present, impact math still amount*(len(cluster)-1) i.e. no double counting, all *_display rupee-prefixed, zero '$' in the payload; (5) POSITIVE CONTROL: resolving the revenue_recovery signal (unbilled services, 1,100,000) makes revenue_recovered_amount exactly 1100000.0 -> the KPI is now provably the sum of resolved revenue_recovery impacts and nothing else (12% baseline is gone); (6) AI: 'How much has this business previously recovered?' on an unresolved workspace consistently answers 'No prior recovery amount is available in the current dataset.' with no fabricated figure; 'largest high-confidence finding' answer is rupee-only, no '$', grounded wording present, citations rupee-prefixed; (7) USD DEMO REGRESSION cfo@demo.seekprofit.app: currency USD, recovered KPI now '$0' with the new hint (intentional change from ~$1.2M), no rupee anywhere in /api/overview, /api/auth/me + /api/workspace/me + /api/signals/members all 200, assign -> status -> unassign -> POST /api/signals/enrich all 2xx, owner_email/due_date/sla_status still on signals, SSE /api/ai/ask/stream emits event:open ... event:done with usable text. Demo baseline re-verified after the run: 15 signals, all open, no owners, USD. No 5xx / tracebacks in backend logs. THREE DEFECTS FOUND (details below): the scenario the review request explicitly asked for - resolving the Cloud Vendor DUPLICATE and expecting 'rupee 46,000' - does NOT work, and the report trend's recovered series can never show a current-month resolution.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/overview + GET /api/reports/executive (services/finance.py compute_kpis)",
+        "issue": "Resolving the Cloud Vendor duplicate-payment signal (impact 46000) leaves Revenue Recovered at 'rupee 0' / revenue_recovered_amount==0, so the spec case in the review request fails. Root cause: compute_kpis() sums only resolved signals with category=='revenue_recovery', but detectors.py emits duplicate_vendor_payment (and overlapping_subscription) with category=='profit_leak'. Recovering a duplicate payment is precisely the cash-recovery the product headlines, yet it can never move the KPI. Proven with tests/probe_recovered_category.py: resolve profit_leak 46000 -> KPI rupee 0; resolve revenue_recovery 1,100,000 -> KPI rupee 1.10M. Fix: include resolved profit_leak impacts (recovered/prevented cash) in revenue_recovered, or split into two cards, or relabel.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "GET /api/reports/executive -> trend[] (services/finance.py build_trend)",
+        "issue": "trend[].recovered stays 0.0 forever for anything resolved in the current month. The bucket window is built as now.replace(day=1) - timedelta(days=(months-1)*31) then + 32*i days, which drifts and drops the current month: container date 2026-08-27 produced buckets Dec,Jan,Feb,Mar,Apr,May,Jun,Jul - August is missing, so resolved_at (set correctly by /api/signals/{id}/status) never maps into key_to_index. Reproduced in isolation with tests/diag_trend.py. Fix: build buckets by month arithmetic (year/month decrement) anchored on the current month, not day-count subtraction. Secondary inconsistency: build_trend sums resolved signals of ALL categories while compute_kpis sums only revenue_recovery, so the chart and the KPI would disagree once the bucket bug is fixed.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/ai/ask (services/llm_analyst.py build_system_prompt)",
+        "issue": "The ban on internal field names is only partially effective - answers still leak 'prior_recovery_available' roughly 20% of the time (2 leaks observed across 12 answers; e.g. 'the prior_recovery_available flag confirms no resolved cases with recovered amounts are present.'). Prompt-only enforcement is non-deterministic; add a cheap post-processing scrub/regex on the answer (and on the SSE done payload) that rejects or rewrites any occurrence of 'the brief', 'dataset_facts', 'prior_recovery_available', 'the JSON'. Quantified by tests/probe_leak_rate.py."
+      },
+      {
+        "endpoint": "GET /api/overview -> recovered KPI hint (services/finance.py compute_kpis)",
+        "issue": "hint_recovered is built as 'across {len(resolved_sigs)} resolved cases' using ALL resolved signals, while the value sums only revenue_recovery ones. Observed 'across 2 resolved cases' next to a value derived from a single signal - the hint overstates the evidence. Count only the signals that contributed to the sum."
+      },
+      {
+        "endpoint": "POST /api/ai/ask brief (_brief_for_ask)",
+        "issue": "Carried over from iteration 4 and still open: the kpis block in the brief has bare floats and no *_display strings, leaving the LLM to format the only unformatted numbers it receives. Add currency-formatted displays for symmetry with top_signals/sample_records."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_grounding_kpi_only.py",
+    "/app/backend/tests/test_currency_grounding.py",
+    "/app/backend/tests/probe_recovered_category.py",
+    "/app/backend/tests/probe_leak_rate.py",
+    "/app/backend/tests/diag_trend.py",
+    "/app/backend/tests/verify_demo_baseline.py",
+    "/app/test_reports/pytest/pytest_iter5.xml",
+    "/app/test_reports/pytest/pytest_iter5_currency.xml"
+  ],
+  "action_items": [
+    "compute_kpis(): decide how resolved profit_leak signals (duplicate payments, overlapping subscriptions) count toward Revenue Recovered - today they count for nothing, so the review-request scenario (resolve the rupee 46,000 Cloud Vendor duplicate -> expect rupee 46,000) returns rupee 0.",
+    "build_trend(): rebuild the month buckets with real month arithmetic so the CURRENT month is included; today a just-resolved signal never appears in trend[].recovered. Also align its category filter with compute_kpis().",
+    "Add a deterministic output scrub for internal field names in /api/ai/ask and /api/ai/ask/stream - the prompt ban still leaks 'prior_recovery_available' in ~20% of answers.",
+    "Fix the recovered-KPI hint to count only the signals that contributed to the sum (currently counts every resolved signal).",
+    "(Carried over) add *_display to the kpis block of _brief_for_ask; push signal ordering into Mongo; accept the Bearer header on /api/ai/ask/stream instead of ?token=; CAD/AUD/SGD map to a bare '$'."
+  ],
+  "critical_code_review_comments": [
+    "services/finance.py: the 12% baseline removal is clean and correct - revenue_recovered is now strictly sum(resolved revenue_recovery impacts), verified by a positive control. But the category coupling between detectors.py (profit_leak for duplicates) and compute_kpis (revenue_recovery only) is undocumented and silently zeroes real recoveries; make the set of 'recovery-eligible' categories an explicit named constant shared by compute_kpis and build_trend.",
+    "build_trend()'s date arithmetic (timedelta(days=31/32) to step months) is unsafe by construction - it drifts, can repeat or skip a month, and currently excludes the present month. Use dateutil.relativedelta or explicit (year, month) decrement.",
+    "Groundedness that matters to a CFO should not depend on prompt compliance alone; add a validation layer that (a) strips internal identifiers and (b) cross-checks any currency figure in the answer against the brief before returning it.",
+    "tests: /app/backend/tests/test_currency_grounding.py's ungrounded_phrases() heuristic flagged the legitimate sentence 'The imported records show rupee 0 previously recovered' as fabrication; I extended the negator window to treat zero-values as negations (test-only change)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_grounding_kpi_only.py",
+    "/app/backend/tests/test_currency_grounding.py",
+    "/app/backend/tests/probe_recovered_category.py",
+    "/app/backend/tests/probe_leak_rate.py",
+    "/app/backend/tests/diag_trend.py",
+    "/app/backend/tests/verify_demo_baseline.py"
+  ],
+  "success_rate": {
+    "backend": "new suite 80% (12/15, 3 stable failures); iteration-4 regression suite 100% (16/16)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Throwaway registrations only: grnd_zero_*, grnd_res_*, probe_cat_*, probe_leak_*@seekprofit.app (password testpass123), each with its own workspace and the INR CSV imported. Demo workspace cfo@demo.seekprofit.app was read plus one assign/status/unassign cycle and one /api/signals/enrich call; re-verified afterwards as 15 signals, all open, no owners, currency USD.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "cfo@demo.seekprofit.app / demo1234 (USD demo, intact). INR workspaces are created on the fly by the suites.",
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_grounding_kpi_only.py tests/test_currency_grounding.py -v (about 60s total; pytest.ini forces -n 2 --dist loadscope, do not edit). The 3 failing cases in TestResolvedSignalDrivesRecoveredKPI are REAL product bugs, not test bugs: (a) test_overview_recovered_equals_resolved_impact and (b) test_executive_recovered_amount_is_46000 fail because duplicate-payment signals are category='profit_leak' and compute_kpis only sums 'revenue_recovery'; (c) test_trend_recovered_reflects_resolution fails because build_trend's bucket window excludes the current month. test_revenue_recovery_category_resolution_moves_kpi is the positive control and PASSES - keep it, it is the guard against the 12% baseline coming back. Useful helpers: _new_inr_workspace(api_client, prefix) registers+onboards+imports the INR CSV in one call; _kpi(kpis, slug) - overview KPIs use 'slug' ('recovered','potential','leaks','actions'), the two count KPIs have no currency symbol. AI-answer leak checks are non-deterministic (~20% for 'prior_recovery_available'); use probe_leak_rate.py to re-measure rather than trusting a single ask. Not covered: frontend/Playwright (explicitly skipped), JPY/zero-decimal formatting, mixed-currency CSV rejection.",
+  "rca_of_the_issue": "Fix (a) is correct at the arithmetic level: compute_kpis() no longer adds 12% of paid invoices, so a fresh INR workspace headlines rupee 0 with hint 'no prior recovery in this dataset' and the executive headline/trend are 0 - the fabricated-recovery bug the user reported is gone, and the USD demo now honestly shows $0. It is however over-restrictive: the resolved-signal set is filtered to category=='revenue_recovery', while the two duplicate-payment signals the review request asked us to resolve are emitted as category=='profit_leak' by detectors.py, so resolving them yields rupee 0 instead of the expected rupee 46,000. Separately, build_trend() still cannot surface any current-month resolution because its 8-month bucket list is generated with 31/32-day timedelta steps from now.replace(day=1), which drops the present month (verified: 2026-08-27 -> buckets Dec..Jul). Fix (b) is implemented in build_system_prompt() (explicit 'NEVER mention the brief / the JSON / dataset_facts / prior_recovery_available') and mostly holds, but being prompt-only it still leaked 'prior_recovery_available' in 2 of 12 sampled answers; a deterministic post-response scrub is needed to close it."
+}

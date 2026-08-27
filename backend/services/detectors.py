@@ -75,12 +75,12 @@ def detect_duplicate_vendor_payments(records: List[dict]) -> List[dict]:
                 signals.append(_base(
                     detector="duplicate_vendor_payment",
                     category="profit_leak",
-                    title=f"Duplicate payment to {vendor}",
+                    title=f"Potential duplicate payment — {vendor}",
                     impact_amount=impact,
                     confidence=0.9,
                     urgency="high",
                     evidence_ids=[r["record_id"] for r in cluster],
-                    amount_type="measured",
+                    amount_type="potential",
                 ))
                 i = j
             else:

@@ -1,0 +1,46 @@
+{
+  "summary": "Backend-only retest of the iteration-6 patch (RECOVERY_ELIGIBLE_CATEGORIES in compute_kpis/build_trend, calendar-month trend buckets via _month_step, deterministic _scrub_internal_terms in routers/ai.py). NEW suite /app/backend/tests/test_iter6_recovery_scrub.py = 13/13 PASS covering scenarios A,B,C,D,E,F + USD demo regression. Iteration-5 suite /app/backend/tests/test_grounding_kpi_only.py = 15/15 PASS (the 3 previously-failing cases now pass; 2 stale assertions written for the old behaviour were updated in-scope, see updated_files). Iteration-4 suite /app/backend/tests/test_currency_grounding.py = 16/16 PASS, assertions untouched. VERIFIED: (A) fresh user -> INR CSV (9 rows) -> resolve 'Potential duplicate payment - Cloud Vendor' (category=profit_leak, impact 46000) -> GET /api/overview recovered KPI value_display=='INR46,000' (rupee), hint=='across 1 resolved case' (no 'no prior recovery'), no '$' anywhere in payload; GET /api/reports/executive headline.revenue_recovered_amount==46000.0 with rupee display. (B) trend[] length 8 and trend[-1].recovered==46.0 (>=46 in K units) with all earlier buckets 0.0 -> the current-month bucket is now included; _month_step arithmetic verified against the container date. (C) POST /api/ai/ask x10 (two runs of 5) with 'Summarize the biggest recoverable finding and cite records.' on fresh INR workspaces -> 0/10 answers contained 'the brief', 'this brief', 'the json', 'dataset_facts', 'prior_recovery_available', 'top_signals' or 'sample_records'; every answer contained the rupee sign and no '$'. Iteration 5 measured ~20% leak rate on the same probe, so the scrub closes it. SSE /api/ai/ask/stream done payload also scrub-clean. (D) fresh un-resolved INR workspace: recovered value_display=='INR0' (rupee 0), amount_type=='measured', hint exactly 'no prior recovery in this dataset', executive revenue_recovered_amount==0, all 8 trend.recovered==0.0, open_pipeline_amount>0 -> zero state not regressed. (E) resolving the unbilled_services revenue_recovery signal alone -> revenue_recovered_amount equals exactly that signal's impact, hint 'across 1 resolved case'. (F) resolving BOTH the profit_leak duplicate (46000) and the revenue_recovery signal -> revenue_recovered_amount is the exact SUM of the two, hint 'across 2 resolved cases', trend[-1].recovered matches the sum in K units. REGRESSION: cfo@demo.seekprofit.app still USD-only (no rupee in /api/overview), recovered '$0'; /api/auth/me, /api/workspace/me, /api/signals, /api/signals/members, /api/signals/{id}/assign, /api/signals/{id}/status, /api/signals/enrich all 2xx; owner_email/due_date/sla_status present on signals; duplicate impact math still single-payment excess. Demo workspace re-verified after the run: 15 signals, all open, no owners, currency USD, KPIs ($0 / $384.3K / 7 / 2). No 5xx or tracebacks in backend logs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/signals (services/detectors.py unbilled_services)",
+        "issue": "Impact-amount semantics mismatch vs the review request: the request expected the unbilled_services signal to be impact 110000, but the API returns 1,100,000. Root cause: impact = mrr * len(missing_months) and the contract row's ANNUAL retainer amount (110000) is used as the monthly rate, so a 10-month gap yields 10x. Pre-existing (same value observed in iteration 5), not a regression from this patch, but it means scenario E/F fixed amounts (110000/156000) can never hold as written - my tests assert the API-derived value and the exact SUM instead. Decide whether contract.amount is annual or monthly and normalise."
+      },
+      {
+        "endpoint": "POST /api/ai/ask (_brief_for_ask kpis block)",
+        "issue": "Carried over: the kpis block has bare floats and no *_display strings. Observed a concrete consequence during the regression run - with revenue_recovered==1,146,000 the analyst answered 'previously recovered INR 1,100,000 across 2 resolved cases', i.e. it quoted the largest contributing signal instead of the KPI total. Add currency-formatted displays (and the explicit total) to the kpis block so the headline figure is unambiguous."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter6_recovery_scrub.py",
+    "/app/backend/tests/test_grounding_kpi_only.py",
+    "/app/backend/tests/test_currency_grounding.py",
+    "/app/test_reports/pytest/pytest_iter6.xml",
+    "/app/test_reports/pytest/pytest_iter6_grounding.xml",
+    "/app/test_reports/pytest/pytest_iter6_regression.xml"
+  ],
+  "action_items": [
+    "No blocking defects. Optional: normalise contract amount vs MRR in the unbilled_services detector (annual 110000 currently produces a 1,100,000 impact).",
+    "Optional: add *_display + explicit total to the kpis block of _brief_for_ask - the LLM quoted a contributing signal's amount (1,100,000) instead of the KPI total (1,146,000)."
+  ],
+  "critical_code_review_comments": [
+    "services/finance.py: RECOVERY_ELIGIBLE_CATEGORIES is now a shared named constant used by both compute_kpis and build_trend - the category drift between the KPI card and the chart is gone and documented.",
+    "_month_step() uses (year*12 + month-1 +/- delta) divmod arithmetic - correct and drift-free; replaces the unsafe timedelta(days=31/32) stepping. Verified 8 buckets ending on the current month.",
+    "hint_recovered now counts only `contributing` signals, so the hint can no longer overstate the evidence ('across 1 resolved case' with a single 46,000 resolution).",
+    "routers/ai.py _scrub_internal_terms() is applied inside _resolve_citations, so both /ask and the SSE done payload go through it - good single choke point. Word-boundary regexes also catch possessives ('the brief's'). Suggest extending the list if new brief field names are added, and consider a unit test on _scrub_internal_terms itself so it is not only covered via slow LLM calls."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6_recovery_scrub.py",
+    "/app/backend/tests/test_grounding_kpi_only.py"
+  ],
+  "success_rate": {"backend": "100% (13/13 new + 15/15 iter5 suite + 16/16 iter4 suite = 44/44)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Throwaway registrations only: it6_dup_*, it6_zero_*, it6_sum_*, it6_ai_*, grnd_zero_*, grnd_res_*@seekprofit.app (password testpass123), each with its own workspace and the 9-row INR CSV. Demo account cfo@demo.seekprofit.app: one assign -> status -> unassign cycle plus /api/signals/enrich; re-verified afterwards as 15 signals, all open, no owners, USD.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "cfo@demo.seekprofit.app / demo1234 (USD demo, state intact after run)",
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_iter6_recovery_scrub.py tests/test_grounding_kpi_only.py tests/test_currency_grounding.py -v (~2.5 min; pytest.ini forces -n 2 --dist loadscope, do not edit). All 44 pass as of this run. Two stale assertions in test_grounding_kpi_only.py were updated for the new behaviour: test_revenue_recovery_category_resolution_moves_kpi now expects 46000 + revenue_recovery impact (both categories are recovery-eligible) and reverts the extra resolution in a finally-block so the following AI test sees a single-resolution state. Do NOT hardcode 110000/156000 for the unbilled_services signal - the API returns 1,100,000 (detector multiplies the contract amount by missing months); assert API-derived sums instead. AI leak checks are now deterministic thanks to _scrub_internal_terms, but keep sampling >=5 asks. Not covered: frontend/Playwright (explicitly skipped), JPY/zero-decimal formatting, mixed-currency CSV rejection, month-rollover behaviour of _month_step across a year boundary in a live run (logic reviewed only).",
+  "rca_of_the_issue": "All three iteration-5 defects are fixed and verified. (1) compute_kpis/build_trend now filter resolved signals on RECOVERY_ELIGIBLE_CATEGORIES = {revenue_recovery, profit_leak}, so resolving the profit_leak duplicate-payment signal moves Revenue Recovered to exactly its impact (46,000) and the two categories sum correctly (scenario F). (2) build_trend anchors on now.replace(day=1) and walks back N-1 CALENDAR months via _month_step, so the current month is always bucket[-1]; a just-resolved signal now appears there (trend[-1].recovered==46.0). (3) _scrub_internal_terms() in routers/ai.py deterministically rewrites the internal field names inside _resolve_citations, which both /api/ai/ask and the SSE done payload pass through - 0 leaks in 10 sampled answers plus 3 more in the older suite, versus ~20% before. Zero-state honesty and the USD demo are unregressed."
+}

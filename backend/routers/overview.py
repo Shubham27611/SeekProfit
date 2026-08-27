@@ -35,6 +35,7 @@ async def get_overview(current_user: dict = Depends(get_current_user)):
     db = get_db()
     ws = await _get_workspace(current_user)
     wid = ws["workspace_id"]
+    currency = ws.get("currency", "USD")
 
     records = await db.financial_records.find({"workspace_id": wid}, {"_id": 0}).to_list(5000)
     signals = await db.signals.find({"workspace_id": wid}, {"_id": 0}).to_list(500)
@@ -53,7 +54,7 @@ async def get_overview(current_user: dict = Depends(get_current_user)):
             "id": s["signal_id"],
             "title": s["title"],
             "source": _source_label(s),
-            "amount_display": format_currency(s.get("impact_amount", 0)),
+            "amount_display": format_currency(s.get("impact_amount", 0), currency),
             "amount_type": s.get("amount_type"),
             "tone": CATEGORY_TONE.get(s["category"], "warning"),
             "badge": CATEGORY_LABEL.get(s["category"], s["category"]),
@@ -62,8 +63,7 @@ async def get_overview(current_user: dict = Depends(get_current_user)):
         for s in open_signals
     ]
 
-    # Formatted KPI display values
-    kpi_display = _format_kpis(kpis)
+    kpi_display = _format_kpis(kpis, currency)
 
     return {
         "workspace": {
@@ -95,20 +95,20 @@ def _source_label(signal: dict) -> str:
     return detector_map.get(signal.get("detector", ""), "SeekProfit engine")
 
 
-def _format_kpis(k: dict) -> list:
+def _format_kpis(k: dict, currency: str = "USD") -> list:
     """Frontend-ready KPI cards."""
     return [
         {
             "slug": "recovered",
             "label": "Revenue Recovered",
-            "value_display": format_currency(k["revenue_recovered"]["value"]),
+            "value_display": format_currency(k["revenue_recovered"]["value"], currency),
             "amount_type": "measured",
             "hint": k["revenue_recovered"]["hint"],
         },
         {
             "slug": "potential",
             "label": "Potential Recovery",
-            "value_display": format_currency(k["potential_recovery"]["value"]),
+            "value_display": format_currency(k["potential_recovery"]["value"], currency),
             "amount_type": "potential",
             "hint": k["potential_recovery"]["hint"],
         },
@@ -118,7 +118,7 @@ def _format_kpis(k: dict) -> list:
             "value_display": str(k["active_profit_leaks"]["value"]),
             "amount_type": "count",
             "hint": k["active_profit_leaks"]["hint"],
-            "supporting_amount": format_currency(k["active_profit_leaks"]["impact"]),
+            "supporting_amount": format_currency(k["active_profit_leaks"]["impact"], currency),
         },
         {
             "slug": "actions",

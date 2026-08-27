@@ -277,7 +277,7 @@ export const AIAnalysisPage = () => {
                                                     <p className="mt-0.5 font-mono text-[10px] text-primary">{c.record_id}</p>
                                                 </div>
                                                 <span className="font-mono tabular-nums text-foreground">
-                                                    ${Number(c.amount).toLocaleString()}
+                                                    {c.amount_display || `$${Number(c.amount).toLocaleString()}`}
                                                 </span>
                                             </li>
                                         ))}
