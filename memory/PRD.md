@@ -63,23 +63,42 @@ _Date: Feb 2026_
 - No double-counting: each record only feeds one category
 - CSV workflow validated end-to-end
 
+## Implemented (Stage 3 — Ops, streaming, executive brief)
+_Date: Feb 2026_
+
+### Action Center
+- Signals now carry `owner_email`, `due_date` and computed `sla_status` (overdue / due_soon / on_track)
+- `POST /api/signals/{id}/assign` — auto-derives SLA due date from urgency (high=3d, medium=7d, low=14d), flips status to `in_progress`; supports explicit due_date and unassign
+- `GET /api/signals/members` — workspace owner + invited emails
+- `GET /api/signals?owner=me` and `?status=in_progress` filters
+- `ActionCenterPage` — one queue table with tabs (Queue / In progress / Assigned to me / Resolved), quick-assign dropdown, per-row SLA badge, resolve/dismiss, row expand with explanation + evidence
+
+### Streaming Q&A
+- `GET /api/ai/ask/stream` — Server-Sent Events. Emits `event: open`, `event: delta` per token, `event: done` with corrected text + resolved citations. Dead `[rec:…]` tokens stripped server-side
+- `lib/aiStream.js` — fetch + ReadableStream client with token-by-token dispatch
+- AI Analysis panel shows a "STREAMING…" pill + animated caret while the reply grows, then renders citation chips once done
+
+### Executive Report
+- `GET /api/reports/executive` — headline (revenue recovered / open pipeline / records analyzed), 3 category totals with open + resolved amounts, trend series, top 8 actions with owner + due, top customers & vendors, resolved wins
+- `ReportsPage` — board-ready layout with a Print / Save PDF button; `@media print` stylesheet strips the app chrome and switches to a light print theme
+
+### Quality
+- Testing agent: **14/14 stage-3 tests + 31/31 regression** passing. All frontend flows working. Fixed the 2 medium UI defects found (React fragment key warning; mobile overflow on Action Center header)
+
 ## Prioritized backlog
 
 ### P0 next
-- Streaming SSE for Ask SeekProfit (nicer perceived latency)
-- Action Center page — unified queue across categories
+- Zero-fill missing categories in the Executive Report so the layout is stable
+- Move signal ordering into the Mongo query (currently sort-after-page)
+- Accept Bearer header on the SSE endpoint (keep query token as fallback)
 
 ### P1
-- Reports: PDF export with recovered $ + open pipeline
-- Roles + granular permissions (owner / admin / analyst / viewer)
 - Native connectors: Stripe first (playbook already exists)
+- CSV → Action Center: keep default SLAs after re-detection
+- Reports: scheduled email delivery
 
 ### P2
+- Roles + granular permissions
 - Audit log
 - Command palette (⌘K)
 - Multi-workspace switcher
-
-## Next tasks (immediate)
-1. Wire the Reports page to real data
-2. Ship the Action Center as a unified queue
-3. First real connector integration (Stripe) using integration playbook

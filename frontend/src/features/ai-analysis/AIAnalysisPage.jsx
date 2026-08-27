@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
     Brain,
     PaperPlaneRight,
@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import api, { apiError } from "@/lib/api";
+import { askStream } from "@/lib/aiStream";
 import { PAGE } from "@/constants/testIds";
 
 const CATEGORIES = [
@@ -70,8 +71,9 @@ export const AIAnalysisPage = () => {
     const [pendingCount, setPendingCount] = useState(0);
 
     const [question, setQuestion] = useState("");
-    const [answer, setAnswer] = useState(null);
+    const [answer, setAnswer] = useState(null); // {text, citations, streaming}
     const [asking, setAsking] = useState(false);
+    const abortRef = useRef(null);
 
     const loadPending = async () => {
         try {
@@ -119,14 +121,31 @@ export const AIAnalysisPage = () => {
         const query = (q || question).trim();
         if (!query || asking) return;
         setAsking(true);
-        setAnswer(null);
+        setAnswer({ text: "", citations: [], streaming: true });
+        const controller = new AbortController();
+        abortRef.current = controller;
         try {
-            const { data } = await api.post("/ai/ask", { question: query });
-            setAnswer(data);
-        } catch (e) {
-            toast.error(apiError(e));
+            await askStream({
+                question: query,
+                signal: controller.signal,
+                onDelta: (chunk) => {
+                    setAnswer((prev) => ({
+                        text: (prev?.text || "") + chunk,
+                        citations: prev?.citations || [],
+                        streaming: true,
+                    }));
+                },
+                onDone: ({ text, citations }) => {
+                    setAnswer({ text: text || "", citations: citations || [], streaming: false });
+                },
+                onError: (msg) => {
+                    toast.error(msg);
+                    setAnswer(null);
+                },
+            });
         } finally {
             setAsking(false);
+            abortRef.current = null;
         }
     };
 
@@ -223,11 +242,20 @@ export const AIAnalysisPage = () => {
 
                     {answer && (
                         <div data-testid="ai-answer" className="rounded-md border border-border bg-background p-4">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">SeekProfit analyst</p>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+                                SeekProfit analyst
+                                {answer.streaming && (
+                                    <span className="ml-2 inline-flex items-center gap-1 text-muted-foreground">
+                                        <CircleNotch size={9} weight="bold" className="animate-spin" />
+                                        streaming…
+                                    </span>
+                                )}
+                            </p>
                             <div className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                                {renderAnswerWithCitations(answer.answer, answer.citations)}
+                                {renderAnswerWithCitations(answer.text || "", answer.citations)}
+                                {answer.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-primary align-middle" />}
                             </div>
-                            {answer.citations?.length > 0 && (
+                            {!answer.streaming && answer.citations?.length > 0 && (
                                 <div className="mt-4 space-y-2 border-t border-border pt-3">
                                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                                         Cited records

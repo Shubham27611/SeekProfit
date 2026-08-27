@@ -30,3 +30,31 @@
         transform: none;
     }
 }
+
+/* Print styles — used for the Executive Brief. */
+@media print {
+    html,
+    body,
+    #root,
+    .App {
+        background: #ffffff !important;
+        color: #000000 !important;
+    }
+    aside,
+    header {
+        display: none !important;
+    }
+    main {
+        padding: 0 !important;
+    }
+    .print\:hidden {
+        display: none !important;
+    }
+    .rounded-md {
+        border-radius: 4px !important;
+    }
+    @page {
+        margin: 18mm 14mm;
+    }
+}
+

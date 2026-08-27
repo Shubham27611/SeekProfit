@@ -18,7 +18,7 @@ export const SectionCard = ({
             )}
         >
             {(title || actions) && (
-                <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+                <header className="flex flex-col items-start gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                         {title ? (
                             <h2 className="font-heading text-base font-medium text-foreground">
@@ -32,7 +32,7 @@ export const SectionCard = ({
                         ) : null}
                     </div>
                     {actions ? (
-                        <div className="flex items-center gap-2">{actions}</div>
+                        <div className="flex flex-wrap items-center gap-2">{actions}</div>
                     ) : null}
                 </header>
             )}

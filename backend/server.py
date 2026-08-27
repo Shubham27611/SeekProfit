@@ -26,6 +26,7 @@ from routers.overview import router as overview_router  # noqa: E402
 from routers.signals import router as signals_router  # noqa: E402
 from routers.ai import router as ai_router  # noqa: E402
 from routers.imports import router as imports_router  # noqa: E402
+from routers.reports import router as reports_router  # noqa: E402
 
 
 logging.basicConfig(
@@ -50,6 +51,7 @@ app.include_router(overview_router)
 app.include_router(signals_router)
 app.include_router(ai_router)
 app.include_router(imports_router)
+app.include_router(reports_router)
 
 
 app.add_middleware(

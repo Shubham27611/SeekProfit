@@ -1,16 +1,24 @@
-"""AI ask-anything endpoint — SSE streaming grounded in workspace data."""
+"""AI ask endpoints — grounded Q&A (non-streaming + SSE streaming)."""
 from __future__ import annotations
+import asyncio
 import json
+import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.db import get_db
 from core.security import get_current_user, decode_token
 from services.finance import compute_kpis
-from services.llm_analyst import stream_ask
+from services.llm_analyst import (
+    stream_ask,
+    _brief_for_ask,
+    _chat,
+    _collect,
+    ASK_SYSTEM,
+)
 
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -30,6 +38,42 @@ async def _wid(user: dict) -> str:
     return ws["workspace_id"]
 
 
+async def _load_context(wid: str):
+    db = get_db()
+    records = await db.financial_records.find({"workspace_id": wid}, {"_id": 0}).to_list(500)
+    signals = await db.signals.find({"workspace_id": wid}, {"_id": 0}).to_list(200)
+    kpis = compute_kpis(records, signals)
+    return records, signals, kpis
+
+
+async def _resolve_citations(wid: str, text: str):
+    """Return (filtered_text, citations[]) — dead [rec:...] tokens stripped."""
+    cited_ids = list(set(re.findall(r"\[rec:([a-zA-Z0-9_\-]+)\]", text)))
+    citations: list = []
+    valid_ids: set = set()
+    if cited_ids:
+        db = get_db()
+        cursor = db.financial_records.find(
+            {"workspace_id": wid, "record_id": {"$in": cited_ids}}, {"_id": 0}
+        )
+        async for r in cursor:
+            valid_ids.add(r["record_id"])
+            citations.append({
+                "record_id": r["record_id"],
+                "type": r["type"],
+                "date": r["date"],
+                "amount": r["amount"],
+                "counterparty": r["counterparty"],
+                "memo": r.get("memo"),
+            })
+    filtered = re.sub(
+        r"\[rec:([a-zA-Z0-9_\-]+)\]",
+        lambda m: m.group(0) if m.group(1) in valid_ids else "",
+        text,
+    )
+    return filtered, citations
+
+
 class AskInput(BaseModel):
     question: str = Field(min_length=2, max_length=800)
 
@@ -37,13 +81,8 @@ class AskInput(BaseModel):
 @router.post("/ask")
 async def ask(payload: AskInput, current_user: dict = Depends(get_current_user)):
     """Non-streaming Q&A — returns {"answer": str, "citations": [record_ids]}."""
-    from services.llm_analyst import _collect, _chat, ASK_SYSTEM, _brief_for_ask
-
-    db = get_db()
     wid = await _wid(current_user)
-    records = await db.financial_records.find({"workspace_id": wid}, {"_id": 0}).to_list(500)
-    signals = await db.signals.find({"workspace_id": wid}, {"_id": 0}).to_list(200)
-    kpis = compute_kpis(records, signals)
+    records, signals, kpis = await _load_context(wid)
 
     brief = _brief_for_ask(kpis, signals, records)
     prompt = (
@@ -63,32 +102,82 @@ async def ask(payload: AskInput, current_user: dict = Depends(get_current_user))
             "page remain valid — try the question again in a moment."
         )
 
-    # Extract cited record IDs from [rec:...] markers, then FILTER to only
-    # tokens that resolve to an actual record in this workspace — so hallucinated
-    # or misclassified ids never surface to the UI.
-    import re
-    cited_ids = list(set(re.findall(r"\[rec:([a-zA-Z0-9_\-]+)\]", text)))
-    citations = []
-    valid_ids = set()
-    if cited_ids:
-        cursor = db.financial_records.find(
-            {"workspace_id": wid, "record_id": {"$in": cited_ids}}, {"_id": 0}
-        )
-        async for r in cursor:
-            valid_ids.add(r["record_id"])
-            citations.append({
-                "record_id": r["record_id"],
-                "type": r["type"],
-                "date": r["date"],
-                "amount": r["amount"],
-                "counterparty": r["counterparty"],
-                "memo": r.get("memo"),
-            })
+    filtered, citations = await _resolve_citations(wid, text)
+    return {"answer": filtered, "citations": citations}
 
-    # Strip any [rec:...] tokens that don't resolve to a real record so the
-    # frontend never renders dead citation chips.
-    def _keep(m):
-        return m.group(0) if m.group(1) in valid_ids else ""
-    text = re.sub(r"\[rec:([a-zA-Z0-9_\-]+)\]", _keep, text)
 
-    return {"answer": text, "citations": citations}
+# ---------------------------------------------------------------------------
+# SSE streaming variant — token-by-token
+# ---------------------------------------------------------------------------
+
+async def _current_user_from_query(token: str = Query(...)) -> dict:
+    """Auth helper for SSE clients that can't set the Authorization header
+    (browser EventSource). We validate the same JWT format and return the
+    same shape as `get_current_user`."""
+    import jwt as _jwt
+    try:
+        payload = decode_token(token)
+    except _jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except _jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    db = get_db()
+    user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+@router.get("/ask/stream")
+async def ask_stream(
+    question: str = Query(..., min_length=2, max_length=800),
+    current_user: dict = Depends(_current_user_from_query),
+):
+    """SSE stream:
+       event: delta   data: {"text": "..."}
+       event: done    data: {"citations": [...]}
+       event: error   data: {"detail": "..."}
+    """
+    wid = await _wid(current_user)
+    records, signals, kpis = await _load_context(wid)
+
+    async def _generate():
+        # Send a hello event so clients know we're live even before Claude
+        # ships the first token.
+        yield "event: open\ndata: {}\n\n"
+
+        collected_parts: list[str] = []
+        try:
+            async for chunk in stream_ask(
+                session_id=f"ask-stream-{current_user['user_id']}",
+                question=question,
+                kpis=kpis,
+                signals=signals,
+                records=records,
+            ):
+                if not chunk:
+                    continue
+                collected_parts.append(chunk)
+                yield f"event: delta\ndata: {json.dumps({'text': chunk})}\n\n"
+        except Exception as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+            return
+
+        full_text = "".join(collected_parts).strip()
+        filtered, citations = await _resolve_citations(wid, full_text)
+        # Send corrected text (dead tokens stripped) so the client can render
+        # a clean final version, then the citation list.
+        final_payload = {"text": filtered, "citations": citations}
+        yield f"event: done\ndata: {json.dumps(final_payload)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

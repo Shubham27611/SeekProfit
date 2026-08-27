@@ -1,0 +1,52 @@
+{
+  "summary": "Stage-3 full-stack test of SeekProfit. Backend: new pytest suite /app/backend/tests/test_stage3.py (14 cases) covering GET /api/signals/members (owner+invited roles), owner_email/due_date/sla_status on the signals list, POST /api/signals/{id}/assign (auto SLA 3/7/14d per urgency verified to <0.5d tolerance, open->in_progress, explicit ISO due_date honored, unassign clears due_date + reopens, 404 on unknown id), ?status=in_progress and ?owner=me filters, GET /api/reports/executive (workspace/headline/3 category_totals/8 trend buckets/<=8 top_actions/top_counterparties/resolved_wins + pipeline-vs-category cross-check + 401 unauth), and the SSE stream GET /api/ai/ask/stream (text/event-stream, event: open first, 3+ delta events, done with corrected text + resolved citations, unresolved [rec:] tokens stripped, 401 on token=deadbeef, 422/401 with no token). 14/14 pass. Iteration-2 regression suite re-run: 31/31 pass (AI enrich long-running class skipped). Frontend: verified Action Center (queue 14 rows, all 4 tabs + stat strip updating, assign via dropdown -> owner + 'Aug 30' due + 'On track · 3d' SLA badge, signal correctly moves into In progress / Assigned to me, unassign, resolve removes from Queue and appears in Resolved, row expand), Reports (all sections, 3 category cards, 8 action rows, Recharts chart, Refresh re-fetches /api/reports/executive, Print/Save PDF visible+enabled), AI streaming (Ask button 'Thinking…', 'STREAMING…' pill next to SEEKPROFIT ANALYST, progressive answer growth observed across 12+ distinct partial lengths, pulse cursor clears on done, citation chips all record-prefixed with zero dead anchors, cited-records list populated), regression on all 9 /app routes, and sign-out clearing localStorage + protected-route redirect. 2 real defects found (React key console error on Action Center, mobile horizontal overflow on Action Center) plus a security review note on the JWT-in-query-string SSE auth.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/signals", "issue": "Sorting is applied AFTER the Mongo fetch (`to_list(limit)` then Python sort). With more signals than `limit` the returned page is an arbitrary Mongo subset, so 'Ordered by Impact x Confidence x Urgency' is only true within that subset. Push the sort into the query (`.sort('priority_score', -1)`)."},
+      {"endpoint": "GET /api/reports/executive", "issue": "`_category_totals` is built from a defaultdict over existing signals, so a workspace missing a category returns fewer than 3 entries and the 'By category' row silently shrinks. Seed all three categories with zeros for a stable board layout."},
+      {"endpoint": "GET /api/reports/executive", "issue": "Loads up to 5000 records + 500 signals and recomputes KPIs/trend on every call with no cache; Refresh on the UI re-triggers the full scan."},
+      {"endpoint": "GET /api/ai/ask/stream", "issue": "JWT is passed in the query string (`?token=`). The client uses fetch (not EventSource), so it CAN send an Authorization header — the token is currently exposed in ingress access logs / browser history. Accept the header and treat ?token= as fallback only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ActionCenterPage", "issue": "React console error on every render: 'Each child in a list should have a unique key prop' — the row map returns a bare <> fragment with the key placed on the inner <tr> instead of the fragment. Use <Fragment key={s.signal_id}>.", "selector": "[data-testid=\"page-action-center\"]", "priority": "MEDIUM"},
+      {"component": "ActionCenterPage (mobile 390px)", "issue": "Whole document scrolls horizontally (scrollWidth 452 vs clientWidth 390). The SectionCard header actions (Queue / In progress / Assigned to me / Resolved TabsList) do not wrap, pushing past the card; 'Resolved' tab is cut off and the 'Signal queue' title squeezes to 3 lines. Reports page has no overflow (390/390).", "selector": "[data-testid=\"action-tab-resolved\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Action Center", "issues": ["Assigning a signal from the Queue tab makes the row vanish immediately (status becomes in_progress, which the Queue filter excludes). Functionally correct but jarring — a toast alone; consider keeping the row briefly or noting 'moved to In progress'."]},
+      {"screen": "Reports / Overview charts", "issues": ["Recharts Y-axis tick labels are clipped on the left at 1920px ('100k' renders as 'I00k', '$50k' as \"'50k\"); increase the YAxis width / left margin."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_stage3.py",
+    "/app/backend/tests/cleanup_stage3.py",
+    "/app/test_reports/pytest/pytest_results_stage3.xml",
+    "/app/test_reports/pytest/pytest_results_stage3_stream.xml",
+    "/app/test_reports/pytest/pytest_results_stage3_regression.xml"
+  ],
+  "action_items": [
+    "ActionCenterPage: key the fragment (Fragment key={s.signal_id}) to clear the React key console error.",
+    "ActionCenterPage mobile: let the tab strip wrap/scroll inside the card so the page does not overflow horizontally at 390px.",
+    "Push signal ordering into the Mongo query instead of sorting the truncated page in Python.",
+    "Return all three category buckets (zero-filled) from /api/reports/executive.",
+    "Accept the Bearer header on /api/ai/ask/stream and stop putting the JWT in the URL query string."
+  ],
+  "critical_code_review_comments": [
+    "routers/reports.py duplicates the same `_workspace()` lookup already copy-pasted in signals.py, ai.py, imports.py, overview.py, onboarding.py — this is now 6 copies; extract a single FastAPI dependency (core/deps.py get_workspace).",
+    "_top_counterparties() is annotated `-> List[dict]` but returns a dict of two lists — the type hint is wrong and misleading.",
+    "lib/aiStream.js never fires a callback if the reader ends without a `done`/`error` event (e.g. ingress drops the connection); the UI would stay stuck on 'Thinking…'. Emit onError when the loop exits without a terminal event, and add a timeout.",
+    "routers/ai.py still imports private symbols (_brief_for_ask, _chat, _collect, ASK_SYSTEM) from services.llm_analyst; promote a public service function.",
+    "constants/testIds.js still only registers PAGE ids — all the new action-*/report-* ids are hardcoded strings in the components."
+  ],
+  "updated_files": ["/app/backend/tests/test_stage3.py", "/app/backend/tests/cleanup_stage3.py"],
+  "success_rate": {"backend": "100% (14/14 stage-3 + 31/31 regression)", "frontend": "100% of Stage-3 flows working; 2 UI defects found"},
+  "seed_data_creation": "No new persistent data. Stage-3 pytest classes register throwaway @seekprofit-qa.com users with the demo dataset (assign/unassign exercised there). Demo workspace cfo@demo.seekprofit.app was mutated by the UI tests then fully restored via /app/backend/tests/cleanup_stage3.py — verified end state: 15 signals, all status=open, no owners.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "cfo@demo.seekprofit.app / demo1234 (works; demo workspace restored). Login test ids are auth-email-input / auth-password-input / auth-submit-button (NOT login-*). Sign-out: app-user-menu-trigger -> app-user-menu-logout.",
+  "context_for_next_testing_agent": "Run backend: cd /app/backend && python -m pytest tests/test_stage3.py -v (SSE happy-path takes ~10s; pytest.ini forces -n 2 --dist loadscope, do not edit). Playwright gotchas learned this run: (1) auth test ids are auth-*, not login-*; (2) Playwright inner_text applies CSS text-transform, so section labels read as 'EXPLANATION'/'TOP ACTIONS' in uppercase — assert case-insensitively; (3) assigning a signal from the Queue tab removes the row from that tab (status -> in_progress), so verify owner/due/SLA on the 'Assigned to me' or 'In progress' tab; (4) always cleanup with tests/cleanup_stage3.py after UI assign/resolve tests. Still not covered: Google OAuth callback exchange, an invited user actually signing in and joining the owner workspace, the Overview 'Export brief'/'Last 8 months' buttons, and CSV-import + Action Center interaction.",
+  "rca_of_the_issue": "ActionCenterPage key error: the row map returns `<>...</>` and puts key={s.signal_id} on the child <tr>, so the fragment (the actual array element) has no key. Mobile overflow: SectionCard's `actions` slot renders the 4-item TabsList inline with the title in a non-wrapping flex row, so at 390px the intrinsic width (~452px) exceeds the viewport and the document itself scrolls horizontally; the table's own overflow-x-auto does not help because the overflow comes from the card header."
+}
